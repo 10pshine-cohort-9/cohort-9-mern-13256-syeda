@@ -1,0 +1,233 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { NavigateFunction } from "react-router-dom";
+
+import NoteDetails from "@/pages/NoteDetails";
+import type { AppDispatch, RootState } from "@/store/store";
+import { clearCurrentNote, getNoteById } from "@/store/noteSlice";
+import type { Note } from "@/types/note";
+
+const mockDispatch = vi.fn<AppDispatch>();
+const mockNavigate = vi.fn<NavigateFunction>();
+const mockUseAppSelector = vi.fn<<T>(selector: (state: RootState) => T) => T>();
+
+let mockNoteId: string | undefined;
+let mockState: RootState;
+
+vi.mock("@/store/hooks", () => ({
+  useAppDispatch: () => mockDispatch,
+  useAppSelector: (selector: (state: RootState) => unknown) =>
+    mockUseAppSelector(selector),
+}));
+
+vi.mock("react-router-dom", () => ({
+  useNavigate: () => mockNavigate,
+  useParams: () => ({ id: mockNoteId }),
+}));
+
+vi.mock("@/store/noteSlice", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/store/noteSlice")>(
+      "@/store/noteSlice",
+    );
+
+  return {
+    ...actual,
+    clearCurrentNote: vi.fn(),
+    getNoteById: vi.fn(),
+  };
+});
+
+vi.mock("@/components/notes/NoteContent", () => ({
+  default: ({ content }: { content: unknown }) => (
+    <div data-testid="note-content">{JSON.stringify(content)}</div>
+  ),
+}));
+
+describe("NoteDetails", () => {
+  const note: Note = {
+    _id: "note-1",
+    title: "My Test Note",
+    content: {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "Hello from my note",
+            },
+          ],
+        },
+      ],
+    },
+    owner: "user-1",
+    parentFolder: null,
+    createdAt: "2026-08-29T00:00:00.000Z",
+    updatedAt: "2026-08-29T00:00:00.000Z",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockNoteId = "note-1";
+
+    mockState = {
+      auth: {
+        user: null,
+        isAuthenticated: false,
+        isLoading: false,
+        isInitialized: false,
+        error: null,
+      },
+      notes: {
+        currentNote: note,
+        currentNoteRequestId: null,
+        isLoading: false,
+        error: null,
+        notes: [],
+      },
+      folders: {
+        folders: [],
+        currentFolder: null,
+        explorerRequestId: null,
+        isLoading: false,
+        error: null,
+      },
+    };
+
+    mockUseAppSelector.mockImplementation((selector) => selector(mockState));
+
+    mockDispatch.mockImplementation(() => ({
+      type: "mock/dispatch",
+    }));
+
+    vi.mocked(getNoteById).mockReturnValue("getNoteById-action" as never);
+
+    vi.mocked(clearCurrentNote).mockReturnValue(
+      "clearCurrentNote-action" as never,
+    );
+  });
+
+  it("loads the note by id", () => {
+    render(<NoteDetails />);
+
+    expect(getNoteById).toHaveBeenCalledWith("note-1");
+    expect(mockDispatch).toHaveBeenCalledWith("getNoteById-action");
+  });
+
+  it("renders the note details", () => {
+    render(<NoteDetails />);
+
+    expect(
+      screen.getByRole("heading", {
+        level: 1,
+        name: "My Test Note",
+      }),
+    ).toBeInTheDocument();
+
+    const updatedDate = new Date(note.updatedAt).toLocaleDateString(undefined, {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+
+    expect(screen.getByText(`Updated ${updatedDate}`)).toBeInTheDocument();
+
+    expect(screen.getByTestId("note-content")).toHaveTextContent(
+      "Hello from my note",
+    );
+
+    expect(screen.getByRole("button", { name: /Back/i })).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: /Edit/i })).toBeInTheDocument();
+  });
+
+  it("navigates back when Back is clicked", () => {
+    render(<NoteDetails />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Back/i }));
+
+    expect(mockNavigate).toHaveBeenCalledWith(-1);
+  });
+
+  it("navigates to the edit page when Edit is clicked", () => {
+    render(<NoteDetails />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Edit/i }));
+
+    expect(mockNavigate).toHaveBeenCalledWith("/dashboard/notes/note-1/edit");
+  });
+
+  it("shows the loading state", () => {
+    mockState.notes.currentNote = null;
+    mockState.notes.isLoading = true;
+
+    render(<NoteDetails />);
+
+    expect(screen.getByText("Loading note...")).toBeInTheDocument();
+
+    expect(
+      screen.queryByRole("button", { name: /Edit/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the error state with a Back button", () => {
+    mockState.notes.currentNote = null;
+    mockState.notes.error = "Failed to load note";
+
+    render(<NoteDetails />);
+
+    expect(screen.getByText("Failed to load note")).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: /Back/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Back/i }));
+
+    expect(mockNavigate).toHaveBeenCalledWith(-1);
+  });
+
+  it("shows the not found state when there is no current note", () => {
+    mockState.notes.currentNote = null;
+
+    render(<NoteDetails />);
+
+    expect(
+      screen.getByRole("heading", {
+        level: 1,
+        name: "Note not found",
+      }),
+    ).toBeInTheDocument();
+
+    expect(
+      screen.getByText("This note may have been deleted or no longer exists."),
+    ).toBeInTheDocument();
+  });
+
+  it("does not load a note when there is no id", () => {
+    mockNoteId = undefined;
+
+    render(<NoteDetails />);
+
+    expect(getNoteById).not.toHaveBeenCalled();
+  });
+
+  it("clears the current note when unmounted", () => {
+    const { unmount } = render(<NoteDetails />);
+
+    unmount();
+
+    expect(clearCurrentNote).toHaveBeenCalled();
+  });
+
+  it("does not navigate to edit when the note id is missing", () => {
+    mockNoteId = undefined;
+
+    render(<NoteDetails />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Edit/i }));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
